@@ -4,6 +4,8 @@ require 'json'
 require 'mechanize'
 require 'mysql2'
 require 'byebug'
+require "rubygems"
+require "bunny"
 
 DB_HOST = ''
 DB_USERNAME = ''
@@ -55,6 +57,14 @@ def crawl_base_url
   begin
     con = Mysql2::Client.new(host: DB_HOST, username: DB_USERNAME, password: DB_PASSWORD, database: DB_NAME)
 
+    STDOUT.sync = true
+
+    @conn = Bunny.new('amqp://guest:guest@localhost:5672')
+    @conn.start
+
+    @ch   = @conn.create_channel
+    @x    = @ch.fanout("logs")
+
     agent_page = Mechanize.new
     agent_page.user_agent_alias = USER_AGENT_ALIAS_SAMPLES[Random.rand(0..12)]
     base_page = agent_page.get('http://www.' + @base_url['url'])
@@ -64,20 +74,26 @@ def crawl_base_url
       page_links.each do |link|
         href = link.href
         uri = URI.parse(href)
-        p href
+
         if uri.host.nil?
           decorated_url = "http://www.#{@base_url['url']}/#{href}".gsub(Regexp.new('(?<!http:)(?<!https:)//'), '/')
-          insert_to_target({ url: decorated_url }, con)
+          @x.publish(decorated_url)
+          # insert_to_target({ url: decorated_url }, con)
         elsif /#{@base_url['url']}/.match(uri.host)
           if href.start_with?('http')
-            insert_to_target({ url: href }, con)
+            @x.publish(href)
+            # insert_to_target({ url: href }, con)
           else
             decorated_url = href.prepend('http:')
-            insert_to_target({ url: decorated_url }, con)
+            @x.publish(decorated_url)
+            # insert_to_target({ url: decorated_url }, con)
           end
         end
+        p href
       end
     end
+
+    @conn.close
   rescue Mysql2::Error => e
     p e
   ensure
